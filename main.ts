@@ -1,41 +1,24 @@
-import {
-	Plugin,
-	PluginSettingTab,
-	Setting,
-	Notice,
-	SuggestModal,
-	requestUrl,
-	TFile,
-	App,
-} from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { spawn, ChildProcess } from "child_process";
+import * as path from "path";
+import {
+	AskOutcome,
+	DEFAULT_SETTINGS,
+	RecallaSettings,
+	ServerState,
+	toMessage,
+} from "./src/types";
+import { BinaryManager } from "./src/binary-manager";
+import { parseAskOutput, classifyAskError } from "./src/ask";
+import { RECALLA_CHAT_VIEW, RecallaChatView } from "./src/chat-view";
+import { RecallaSearchModal } from "./src/search-modal";
+import { RecallaSettingTab } from "./src/settings-tab";
 
-interface RecallaSettings {
-	recallaPath: string;
-	port: number;
-	autoStartServer: boolean;
-	autoReindexOnSave: boolean;
-}
-
-const DEFAULT_SETTINGS: RecallaSettings = {
-	recallaPath: "recalla",
-	port: 8090,
-	autoStartServer: false,
-	autoReindexOnSave: false,
-};
-
-interface RecallaSearchResult {
-	id: string;
-	title: string;
-	category: string;
-	summary: string;
-	path: string;
-}
-
-type ServerState = "off" | "running" | "indexing";
+const REINDEX_DEBOUNCE_MS = 3000;
 
 export default class RecallaPlugin extends Plugin {
 	settings: RecallaSettings = DEFAULT_SETTINGS;
+	binary!: BinaryManager;
 	serverProcess: ChildProcess | null = null;
 	indexing = false;
 	private statusBarEl: HTMLElement | null = null;
@@ -43,15 +26,50 @@ export default class RecallaPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.binary = new BinaryManager(this.pluginDir());
+
+		this.registerView(
+			RECALLA_CHAT_VIEW,
+			(leaf: WorkspaceLeaf) => new RecallaChatView(leaf, this)
+		);
+		this.addRibbonIcon("messages-square", "Recalla chat", () => {
+			void this.activateChatView();
+		});
 
 		this.statusBarEl = this.addStatusBarItem();
 		this.statusBarEl.addClass("recalla-status-bar");
 		this.updateStatusBar();
 
 		this.addCommand({
+			id: "recalla-open-chat",
+			name: "Recalla: Open chat",
+			callback: () => {
+				void this.activateChatView();
+			},
+		});
+
+		this.addCommand({
+			id: "recalla-download-engine",
+			name: "Recalla: Download or update the engine",
+			callback: () => {
+				void this.downloadEngine();
+			},
+		});
+
+		this.addCommand({
+			id: "recalla-make-agent-readable",
+			name: "Recalla: Make my vault agent-readable",
+			callback: () => {
+				void this.makeAgentReadable();
+			},
+		});
+
+		this.addCommand({
 			id: "recalla-index",
 			name: "Recalla: Reindex vault",
-			callback: () => this.runIndex(),
+			callback: () => {
+				void this.indexVault();
+			},
 		});
 
 		this.addCommand({
@@ -77,7 +95,9 @@ export default class RecallaPlugin extends Plugin {
 		this.addCommand({
 			id: "recalla-copy-mcp",
 			name: "Recalla: Copy MCP config to clipboard",
-			callback: () => this.copyMcpConfig(),
+			callback: () => {
+				void this.copyMcpConfig();
+			},
 		});
 
 		this.addCommand({
@@ -126,6 +146,41 @@ export default class RecallaPlugin extends Plugin {
 		return adapter.basePath;
 	}
 
+	/** Absolute path to this plugin's own folder inside the vault. */
+	private pluginDir(): string {
+		return path.join(this.getVaultPath(), this.manifest.dir ?? "");
+	}
+
+	/**
+	 * Resolve which binary to run, in priority order:
+	 * user-set path > downloaded binary > `recalla` on PATH.
+	 */
+	resolveBinaryPath(): string {
+		const override = this.settings.recallaPath.trim();
+		if (override.length > 0) {
+			return override;
+		}
+		if (this.binary.isDownloaded()) {
+			return this.binary.binaryPath();
+		}
+		return "recalla";
+	}
+
+	/** Human-readable engine state for the settings tab. */
+	engineStatusLabel(): string {
+		const override = this.settings.recallaPath.trim();
+		if (override.length > 0) {
+			return `using custom path (${override})`;
+		}
+		if (this.binary.isDownloaded()) {
+			return "downloaded and ready";
+		}
+		if (!this.binary.isPlatformSupported()) {
+			return "no build for this platform; set a custom path";
+		}
+		return "not downloaded yet";
+	}
+
 	private getState(): ServerState {
 		if (this.indexing) {
 			return "indexing";
@@ -154,36 +209,185 @@ export default class RecallaPlugin extends Plugin {
 		}
 	}
 
-	runIndex(): void {
-		if (this.indexing) {
-			new Notice("Recalla is already indexing.");
+	/** Reveal the chat panel in the right sidebar, reusing an open one. */
+	async activateChatView(): Promise<void> {
+		const { workspace } = this.app;
+		const existing = workspace.getLeavesOfType(RECALLA_CHAT_VIEW);
+		if (existing.length > 0) {
+			await workspace.revealLeaf(existing[0]);
 			return;
 		}
-		const vaultPath = this.getVaultPath();
-		this.indexing = true;
-		this.updateStatusBar();
-		new Notice("Recalla: indexing vault...");
+		const leaf = workspace.getRightLeaf(false);
+		if (leaf === null) {
+			return;
+		}
+		await leaf.setViewState({ type: RECALLA_CHAT_VIEW, active: true });
+		await workspace.revealLeaf(leaf);
+	}
 
-		const child = spawn(this.settings.recallaPath, [
-			"index",
-			"--vault",
-			vaultPath,
-		]);
-
-		child.on("error", (err: Error) => {
-			this.indexing = false;
+	/** Download or update the managed engine binary. */
+	async downloadEngine(): Promise<void> {
+		if (!this.binary.isPlatformSupported()) {
+			new Notice(
+				"Recalla: no engine build for this platform. Set a custom engine path in settings."
+			);
+			return;
+		}
+		try {
+			await this.binary.downloadLatest();
 			this.updateStatusBar();
-			new Notice(`Recalla index failed: ${err.message}`);
-		});
+		} catch (err) {
+			new Notice(`Recalla: ${toMessage(err)}`);
+		}
+	}
 
-		child.on("close", (code: number | null) => {
-			this.indexing = false;
+	/**
+	 * Ensure an engine is available: trust a custom path, reuse a download, or
+	 * fetch it now. Returns false if nothing usable could be obtained.
+	 */
+	private async ensureEngine(): Promise<boolean> {
+		if (this.settings.recallaPath.trim().length > 0) {
+			return true;
+		}
+		if (this.binary.isDownloaded()) {
+			return true;
+		}
+		if (!this.binary.isPlatformSupported()) {
+			new Notice(
+				"Recalla: no engine build for this platform. Set a custom engine path in settings."
+			);
+			return false;
+		}
+		try {
+			await this.binary.downloadLatest();
 			this.updateStatusBar();
-			if (code === 0 || code === null) {
-				new Notice("Recalla: index complete.");
-			} else {
-				new Notice(`Recalla index exited with code ${code}.`);
+			return true;
+		} catch (err) {
+			new Notice(`Recalla: ${toMessage(err)}`);
+			return false;
+		}
+	}
+
+	/** One-click onboarding: get the engine, index the vault, start serving. */
+	async makeAgentReadable(): Promise<void> {
+		const ready = await this.ensureEngine();
+		if (!ready) {
+			return;
+		}
+		const indexed = await this.indexVault();
+		if (indexed) {
+			this.startServer();
+		}
+	}
+
+	/** Run `recalla ask` and return a structured outcome for the chat UI. */
+	runAsk(question: string): Promise<AskOutcome> {
+		return new Promise<AskOutcome>((resolve) => {
+			const vaultPath = this.getVaultPath();
+			const bin = this.resolveBinaryPath();
+			let stdout = "";
+			let stderr = "";
+			let settled = false;
+
+			const finish = (outcome: AskOutcome): void => {
+				if (!settled) {
+					settled = true;
+					resolve(outcome);
+				}
+			};
+
+			let child: ChildProcess;
+			try {
+				child = spawn(bin, ["ask", question, "--vault", vaultPath]);
+			} catch (err) {
+				finish({
+					answer: "",
+					sources: [],
+					error: { kind: "engine-missing", message: toMessage(err) },
+				});
+				return;
 			}
+
+			child.stdout?.on("data", (data: Buffer) => {
+				stdout += data.toString();
+			});
+			child.stderr?.on("data", (data: Buffer) => {
+				stderr += data.toString();
+			});
+			child.on("error", (err: NodeJS.ErrnoException) => {
+				const kind =
+					err.code === "ENOENT" ? "engine-missing" : "unknown";
+				finish({
+					answer: "",
+					sources: [],
+					error: { kind, message: err.message },
+				});
+			});
+			child.on("close", (code: number | null) => {
+				if (code === 0 || code === null) {
+					const parsed = parseAskOutput(stdout);
+					finish({
+						answer: parsed.answer,
+						sources: parsed.sources,
+						error: null,
+					});
+				} else {
+					finish({
+						answer: stdout.trim(),
+						sources: [],
+						error: classifyAskError(stderr || stdout),
+					});
+				}
+			});
+		});
+	}
+
+	/** Open a cited note from a chat answer. */
+	openSource(target: string): void {
+		const file = this.app.vault.getAbstractFileByPath(target);
+		if (file instanceof TFile) {
+			void this.app.workspace.getLeaf(false).openFile(file);
+			return;
+		}
+		void this.app.workspace.openLinkText(target, "", false);
+	}
+
+	/** Index the vault. Resolves true on success, false on failure. */
+	indexVault(): Promise<boolean> {
+		if (this.indexing) {
+			new Notice("Recalla is already indexing.");
+			return Promise.resolve(false);
+		}
+		return new Promise<boolean>((resolve) => {
+			const vaultPath = this.getVaultPath();
+			this.indexing = true;
+			this.updateStatusBar();
+			new Notice("Recalla: indexing vault...");
+
+			const child = spawn(this.resolveBinaryPath(), [
+				"index",
+				"--vault",
+				vaultPath,
+			]);
+
+			child.on("error", (err: Error) => {
+				this.indexing = false;
+				this.updateStatusBar();
+				new Notice(`Recalla index failed: ${err.message}`);
+				resolve(false);
+			});
+
+			child.on("close", (code: number | null) => {
+				this.indexing = false;
+				this.updateStatusBar();
+				if (code === 0 || code === null) {
+					new Notice("Recalla: index complete.");
+					resolve(true);
+				} else {
+					new Notice(`Recalla index exited with code ${code}.`);
+					resolve(false);
+				}
+			});
 		});
 	}
 
@@ -193,7 +397,7 @@ export default class RecallaPlugin extends Plugin {
 			return;
 		}
 		const vaultPath = this.getVaultPath();
-		const child = spawn(this.settings.recallaPath, [
+		const child = spawn(this.resolveBinaryPath(), [
 			"serve",
 			"--vault",
 			vaultPath,
@@ -233,8 +437,8 @@ export default class RecallaPlugin extends Plugin {
 		}
 		this.reindexTimer = setTimeout(() => {
 			this.reindexTimer = null;
-			this.runIndex();
-		}, 3000);
+			void this.indexVault();
+		}, REINDEX_DEBOUNCE_MS);
 	}
 
 	async copyMcpConfig(): Promise<void> {
@@ -242,7 +446,7 @@ export default class RecallaPlugin extends Plugin {
 		const config = {
 			mcpServers: {
 				recalla: {
-					command: this.settings.recallaPath,
+					command: this.resolveBinaryPath(),
 					args: ["mcp", "--vault", vaultPath],
 				},
 			},
@@ -252,15 +456,14 @@ export default class RecallaPlugin extends Plugin {
 			await navigator.clipboard.writeText(json);
 			new Notice("Recalla: MCP config copied to clipboard.");
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			new Notice(`Recalla: could not copy MCP config: ${message}`);
+			new Notice(`Recalla: could not copy MCP config: ${toMessage(err)}`);
 		}
 	}
 
 	runAgents(): void {
 		const vaultPath = this.getVaultPath();
 		new Notice("Recalla: generating AGENTS.md and llms.txt...");
-		const child = spawn(this.settings.recallaPath, [
+		const child = spawn(this.resolveBinaryPath(), [
 			"agents",
 			"--vault",
 			vaultPath,
@@ -277,142 +480,5 @@ export default class RecallaPlugin extends Plugin {
 				new Notice(`Recalla agents exited with code ${code}.`);
 			}
 		});
-	}
-}
-
-class RecallaSearchModal extends SuggestModal<RecallaSearchResult> {
-	private plugin: RecallaPlugin;
-
-	constructor(app: App, plugin: RecallaPlugin) {
-		super(app);
-		this.plugin = plugin;
-		this.setPlaceholder("Search your vault via the Recalla agent index...");
-	}
-
-	async getSuggestions(query: string): Promise<RecallaSearchResult[]> {
-		if (query.length < 2) {
-			return [];
-		}
-		const port = this.plugin.settings.port;
-		const url = `http://127.0.0.1:${port}/search?q=${encodeURIComponent(
-			query
-		)}&limit=15`;
-		try {
-			const response = await requestUrl({ url });
-			const data = response.json as { results?: RecallaSearchResult[] };
-			if (!data || !Array.isArray(data.results)) {
-				return [];
-			}
-			return data.results;
-		} catch (err) {
-			new Notice(
-				"Recalla: search failed. Start the local server with the 'Recalla: Start local server' command."
-			);
-			return [];
-		}
-	}
-
-	renderSuggestion(item: RecallaSearchResult, el: HTMLElement): void {
-		const titleEl = el.createDiv();
-		titleEl.createSpan({
-			text: item.title || item.path || item.id,
-			cls: "recalla-suggestion-title",
-		});
-		if (item.category) {
-			titleEl.createSpan({
-				text: item.category,
-				cls: "recalla-suggestion-meta",
-			});
-		}
-		if (item.summary) {
-			el.createSpan({
-				text: item.summary,
-				cls: "recalla-suggestion-summary",
-			});
-		}
-	}
-
-	onChooseSuggestion(item: RecallaSearchResult): void {
-		if (!item.path) {
-			return;
-		}
-		const file = this.app.vault.getAbstractFileByPath(item.path);
-		if (file instanceof TFile) {
-			this.app.workspace.getLeaf(false).openFile(file);
-		} else {
-			this.app.workspace.openLinkText(item.path, "", false);
-		}
-	}
-}
-
-class RecallaSettingTab extends PluginSettingTab {
-	private plugin: RecallaPlugin;
-
-	constructor(app: App, plugin: RecallaPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName("Recalla CLI path")
-			.setDesc(
-				"Command or absolute path to the recalla CLI. Install it with 'pip install recalla'."
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder("recalla")
-					.setValue(this.plugin.settings.recallaPath)
-					.onChange(async (value) => {
-						this.plugin.settings.recallaPath =
-							value.trim() || DEFAULT_SETTINGS.recallaPath;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Server port")
-			.setDesc("Local HTTP API port (bound to 127.0.0.1).")
-			.addText((text) =>
-				text
-					.setPlaceholder("8090")
-					.setValue(String(this.plugin.settings.port))
-					.onChange(async (value) => {
-						const parsed = Number.parseInt(value, 10);
-						if (!Number.isNaN(parsed) && parsed > 0) {
-							this.plugin.settings.port = parsed;
-							await this.plugin.saveSettings();
-						}
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Auto-start server on load")
-			.setDesc("Start the local Recalla server when Obsidian opens.")
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.autoStartServer)
-					.onChange(async (value) => {
-						this.plugin.settings.autoStartServer = value;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Auto-reindex on save")
-			.setDesc(
-				"Reindex the vault automatically after notes change (debounced)."
-			)
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.autoReindexOnSave)
-					.onChange(async (value) => {
-						this.plugin.settings.autoReindexOnSave = value;
-						await this.plugin.saveSettings();
-					})
-			);
 	}
 }

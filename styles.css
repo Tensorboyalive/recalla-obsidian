@@ -36,3 +36,156 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+
+/* Recalla chat panel */
+.recalla-chat {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0;
+}
+
+.recalla-chat-header {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: var(--size-4-3) var(--size-4-4);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.recalla-chat-title {
+	font-weight: var(--font-bold);
+	font-size: var(--font-ui-medium);
+}
+
+.recalla-chat-subtitle {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.recalla-chat-list {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	padding: var(--size-4-3) var(--size-4-4);
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+}
+
+.recalla-chat-welcome {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.5;
+}
+
+.recalla-msg {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	max-width: 100%;
+}
+
+.recalla-msg-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	line-height: 1.5;
+	border-radius: var(--radius-m);
+	padding: var(--size-4-2) var(--size-4-3);
+}
+
+.recalla-msg-user {
+	align-items: flex-end;
+}
+
+.recalla-msg-user .recalla-msg-text {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.recalla-msg-assistant .recalla-msg-text {
+	background-color: var(--background-secondary);
+	color: var(--text-normal);
+}
+
+.recalla-msg-error .recalla-msg-text {
+	background-color: var(--background-modifier-error);
+	color: var(--text-normal);
+}
+
+.recalla-sources {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 0 var(--size-4-3);
+}
+
+.recalla-sources-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.recalla-source-link {
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+	color: var(--text-accent);
+	text-decoration: none;
+	overflow-wrap: anywhere;
+}
+
+.recalla-source-link:hover {
+	text-decoration: underline;
+}
+
+.recalla-msg-actions {
+	padding: 0 var(--size-4-3);
+}
+
+.recalla-inline-button {
+	cursor: pointer;
+}
+
+.recalla-help-list {
+	margin: var(--size-4-1) 0 0;
+	padding-left: var(--size-4-4);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.5;
+}
+
+.recalla-help-note {
+	margin-top: var(--size-4-2);
+	padding: 0 var(--size-4-3);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.recalla-chat-form {
+	display: flex;
+	gap: var(--size-4-2);
+	align-items: flex-end;
+	padding: var(--size-4-3) var(--size-4-4);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.recalla-chat-input {
+	flex: 1 1 auto;
+	resize: none;
+	min-height: 2.4em;
+	max-height: 8em;
+	font-family: inherit;
+}
+
+.recalla-chat-send {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+
+.recalla-chat-send:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
