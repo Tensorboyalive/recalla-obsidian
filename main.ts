@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf, requestUrl } from "obsidian";
 import { spawn, ChildProcess } from "child_process";
 import * as path from "path";
 import {
@@ -15,6 +15,8 @@ import { RecallaSearchModal } from "./src/search-modal";
 import { RecallaSettingTab } from "./src/settings-tab";
 
 const REINDEX_DEBOUNCE_MS = 3000;
+const SERVER_READY_TIMEOUT_MS = 20000;
+const SERVER_POLL_INTERVAL_MS = 400;
 
 export default class RecallaPlugin extends Plugin {
 	settings: RecallaSettings = DEFAULT_SETTINGS;
@@ -87,8 +89,11 @@ export default class RecallaPlugin extends Plugin {
 		this.addCommand({
 			id: "recalla-search",
 			name: "Recalla: Search vault (agent index)",
-			callback: () => {
-				new RecallaSearchModal(this.app, this).open();
+			callback: async () => {
+				const ready = await this.ensureServerReady();
+				if (ready) {
+					new RecallaSearchModal(this.app, this).open();
+				}
 			},
 		});
 
@@ -276,7 +281,10 @@ export default class RecallaPlugin extends Plugin {
 		}
 		const indexed = await this.indexVault();
 		if (indexed) {
-			this.startServer();
+			const up = await this.ensureServerReady();
+			if (up) {
+				new Notice("Recalla: your vault is agent-readable and serving.");
+			}
 		}
 	}
 
@@ -429,6 +437,64 @@ export default class RecallaPlugin extends Plugin {
 		this.serverProcess = null;
 		this.updateStatusBar();
 		new Notice("Recalla: server stopped.");
+	}
+
+	/** A single /health probe. True only on a 200 with the recalla engine. */
+	async isServerHealthy(): Promise<boolean> {
+		try {
+			const res = await requestUrl({
+				url: `http://127.0.0.1:${this.settings.port}/health`,
+				throw: false,
+			});
+			return res.status === 200 && res.json?.ok === true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Poll /health until the server answers or the timeout elapses. The
+	 * standalone binary self-extracts on first run and can take several seconds
+	 * to start, so callers must wait rather than assume the server is up.
+	 */
+	async waitForServerReady(
+		timeoutMs: number = SERVER_READY_TIMEOUT_MS
+	): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (await this.isServerHealthy()) {
+				return true;
+			}
+			await new Promise((r) => setTimeout(r, SERVER_POLL_INTERVAL_MS));
+		}
+		return false;
+	}
+
+	/**
+	 * Guarantee the local server is reachable: reuse it if healthy, otherwise
+	 * acquire the engine, start serving, and wait for /health. Returns false if
+	 * it could not be made ready.
+	 */
+	async ensureServerReady(): Promise<boolean> {
+		if (await this.isServerHealthy()) {
+			return true;
+		}
+		if (this.serverProcess === null) {
+			const ready = await this.ensureEngine();
+			if (!ready) {
+				return false;
+			}
+			this.startServer();
+		}
+		const notice = new Notice("Recalla: starting local server...", 0);
+		const ok = await this.waitForServerReady();
+		notice.hide();
+		if (!ok) {
+			new Notice(
+				"Recalla: the local server did not come up in time. Check the engine path in settings."
+			);
+		}
+		return ok;
 	}
 
 	private scheduleReindex(): void {

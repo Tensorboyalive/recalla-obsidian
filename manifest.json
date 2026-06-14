@@ -3,7 +3,8 @@
 	"name": "Recalla",
 	"version": "0.1.0",
 	"minAppVersion": "1.4.0",
-	"description": "Make your vault a fast, private, agent-readable brain. Index, search, and connect AI agents (MCP), all local.",
-	"author": "recalla",
+	"description": "Make your vault a fast, private, agent-readable brain. Index, search, and chat with your notes, all on your machine.",
+	"author": "Tensorboyalive",
+	"authorUrl": "https://github.com/Tensorboyalive/recalla",
 	"isDesktopOnly": true
 }
