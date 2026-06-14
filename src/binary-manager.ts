@@ -2,6 +2,7 @@ import { Notice } from "obsidian";
 import * as fs from "fs";
 import * as path from "path";
 import * as https from "https";
+import * as crypto from "crypto";
 import type { IncomingMessage } from "http";
 import { toMessage } from "./types";
 
@@ -82,6 +83,10 @@ export class BinaryManager {
 				}
 			});
 
+			// Verify integrity. The binary is executed, so a mismatch must abort.
+			notice.setMessage("Recalla: verifying engine...");
+			await this.verifyChecksum(tmp, `${url}.sha256`, notice);
+
 			fs.renameSync(tmp, target);
 			if (process.platform !== "win32") {
 				fs.chmodSync(target, EXECUTABLE_MODE);
@@ -158,6 +163,74 @@ export class BinaryManager {
 			});
 
 			request.on("error", reject);
+		});
+	}
+
+	/**
+	 * Verify the downloaded file against its published .sha256. A mismatch aborts
+	 * (the binary is executed). If no checksum is published (older release), warn
+	 * and continue rather than blocking the user.
+	 */
+	private async verifyChecksum(
+		filePath: string,
+		checksumUrl: string,
+		notice: Notice
+	): Promise<void> {
+		const published = await this.fetchText(checksumUrl);
+		if (published === null) {
+			notice.setMessage("Recalla: no checksum published, skipping verification.");
+			return;
+		}
+		const expected = published.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+		const actual = crypto
+			.createHash("sha256")
+			.update(fs.readFileSync(filePath))
+			.digest("hex");
+		if (!expected || expected !== actual) {
+			this.safeUnlink(filePath);
+			throw new Error(
+				`checksum mismatch (expected ${expected || "none"}, got ${actual}). Download rejected.`
+			);
+		}
+	}
+
+	/** Fetch a small text resource, following redirects. Returns null on 404. */
+	private fetchText(
+		url: string,
+		redirectsLeft: number = MAX_REDIRECTS
+	): Promise<string | null> {
+		return new Promise<string | null>((resolve, reject) => {
+			https
+				.get(url, (res: IncomingMessage) => {
+					const status = res.statusCode ?? 0;
+					const location = res.headers.location;
+					if (status >= 300 && status < 400 && location) {
+						res.resume();
+						if (redirectsLeft <= 0) {
+							reject(new Error("too many redirects."));
+							return;
+						}
+						const next = new URL(location, url).toString();
+						this.fetchText(next, redirectsLeft - 1).then(resolve, reject);
+						return;
+					}
+					if (status === 404) {
+						res.resume();
+						resolve(null);
+						return;
+					}
+					if (status !== 200) {
+						res.resume();
+						reject(new Error(`HTTP ${status}.`));
+						return;
+					}
+					let body = "";
+					res.setEncoding("utf8");
+					res.on("data", (chunk: string) => (body += chunk));
+					res.on("end", () => resolve(body));
+					res.on("error", reject);
+				})
+				.on("error", reject);
 		});
 	}
 
