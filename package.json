@@ -1,0 +1,25 @@
+{
+	"name": "recalla-obsidian",
+	"version": "0.1.0",
+	"description": "Obsidian plugin that makes your vault agent-readable by wrapping the recalla CLI.",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+	},
+	"keywords": [
+		"obsidian",
+		"recalla",
+		"mcp",
+		"agent"
+	],
+	"author": "recalla",
+	"license": "Apache-2.0",
+	"devDependencies": {
+		"@types/node": "^20.11.0",
+		"builtin-modules": "^3.3.0",
+		"esbuild": "^0.20.0",
+		"obsidian": "latest",
+		"typescript": "^5.4.0"
+	}
+}

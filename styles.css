@@ -1,0 +1,38 @@
+/* Recalla status bar item */
+.recalla-status-bar {
+	cursor: default;
+	font-variant-numeric: tabular-nums;
+}
+
+.recalla-status-bar.is-running {
+	color: var(--text-success);
+}
+
+.recalla-status-bar.is-indexing {
+	color: var(--text-warning);
+}
+
+.recalla-status-bar.is-off {
+	color: var(--text-muted);
+}
+
+/* Recalla search results */
+.recalla-suggestion-title {
+	font-weight: var(--font-semibold);
+}
+
+.recalla-suggestion-meta {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-left: 0.5em;
+}
+
+.recalla-suggestion-summary {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	display: block;
+	margin-top: 2px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

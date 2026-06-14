@@ -1,0 +1,9 @@
+{
+	"id": "recalla",
+	"name": "Recalla",
+	"version": "0.1.0",
+	"minAppVersion": "1.4.0",
+	"description": "Make your vault a fast, private, agent-readable brain. Index, search, and connect AI agents (MCP), all local.",
+	"author": "recalla",
+	"isDesktopOnly": true
+}
