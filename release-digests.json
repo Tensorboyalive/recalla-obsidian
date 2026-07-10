@@ -1,10 +1,10 @@
 {
   "engineVersion": "0.5.0",
   "assets": {
-    "recalla-macos-arm64": "",
-    "recalla-macos-x64": "",
-    "recalla-linux-arm64": "",
-    "recalla-linux-x64": "",
-    "recalla-windows-x64.exe": ""
+    "recalla-macos-arm64": "b3e3f294d0f1bbc1af2302a4ba0a873f3d1f9770381336f208a1210497c551ee",
+    "recalla-macos-x64": "30c679e9922c000644cb57f29d55c3011ba8ee9566dafbaad585bb9a1b056ee6",
+    "recalla-linux-arm64": "14ddeb12e14f183cc10b24037d422769e19dadd20eb64a2d58654dba00bea403",
+    "recalla-linux-x64": "4b9b6358ae78f3629c01823085adc906ce2ca2fc417e6fb75d7b78b53942265b",
+    "recalla-windows-x64.exe": "201ceab2c88c4eb7a09478feec24381b133ccb399247760898f8318d2b867549"
   }
 }
