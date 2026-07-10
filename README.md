@@ -12,7 +12,7 @@ chat over your notes, all on your machine.
 
 <br/>
 
-[![release](https://img.shields.io/badge/release-0.1.0-A1ED63?labelColor=093328)](https://github.com/Tensorboyalive/recalla-obsidian/releases/tag/0.1.0)
+[![release](https://img.shields.io/badge/release-0.1.1-A1ED63?labelColor=093328)](https://github.com/Tensorboyalive/recalla-obsidian/releases/latest)
 [![license](https://img.shields.io/badge/license-Apache--2.0-A1ED63?labelColor=093328)](./LICENSE)
 [![local-first](https://img.shields.io/badge/local--first-no%20telemetry-093328?labelColor=A1ED63)](#)
 
@@ -22,23 +22,29 @@ chat over your notes, all on your machine.
 
 ## install
 
-the community directory listing is pending, so grab it from the release:
+the community directory listing is pending, so install the three files from the
+[latest release](https://github.com/Tensorboyalive/recalla-obsidian/releases/latest)
+into `.obsidian/plugins/recalla/`, then enable **recalla** in community plugins.
 
-> [**release 0.1.0**](https://github.com/Tensorboyalive/recalla-obsidian/releases/tag/0.1.0)
+run **recalla: make my vault agent-readable** from the command palette. the
+plugin downloads the matching OS and CPU build from the pinned engine `v0.5.0`
+release. it requires an embedded trusted digest, requires the published sidecar
+to name that exact asset, and hashes the bytes before execution. then it indexes
+the vault and starts the local api. no python or terminal setup is required.
 
-then point the plugin at a running recalla engine:
-
-```bash
-pip install recalla        # or the zero-python binary
-recalla serve --watch      # local json api on 127.0.0.1
-```
+managed builds support macOS arm64/x64, Linux arm64/x64, and Windows x64.
+advanced users on another architecture can set a custom `recalla` executable in
+plugin settings instead.
 
 ## what it does
 
 - search your vault with bm25 + semantic ranking, inside obsidian.
-- chat over the results. retrieval stays local; only the context you pick reaches
-  the llm (openai · anthropic · ollama · echo).
-- nothing leaves your machine. no cloud, no account, no telemetry.
+- chat over full matching sections with citations. without an llm key, recalla
+  returns an offline extractive answer from your notes.
+- copy a ready-to-paste mcp config so agents can read and write memory locally.
+- manage the engine, indexing, and local server from the command palette.
+- no cloud, no account, no telemetry. only context sent to a configured cloud llm
+  leaves the machine.
 
 ---
 

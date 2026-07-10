@@ -1,0 +1,91 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Verify version
+        run: |
+          node - <<'NODE'
+          const manifest = require("./manifest.json");
+          const pkg = require("./package.json");
+          const versions = require("./versions.json");
+          const tag = process.env.GITHUB_REF_NAME;
+          const versionsMatch =
+            manifest.version === tag &&
+            pkg.version === tag &&
+            Boolean(versions[tag]);
+          if (!versionsMatch) {
+            throw new Error(
+              `tag ${tag} does not match manifest, package, and versions`,
+            );
+          }
+          NODE
+      - name: Test and build
+        run: |
+          npm test
+          npm run build
+      - name: Verify pinned engine assets and digests
+        run: node scripts/verify-engine-assets.mjs
+      - name: Verify plugin assets
+        run: test -s main.js && test -s manifest.json && test -s styles.css
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: plugin-release
+          path: |
+            main.js
+            manifest.json
+            styles.css
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status="$(curl --silent --show-error --output /tmp/release.json \
+            --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")"
+          if [ "$status" = "200" ]; then
+            echo "release ${GITHUB_REF_NAME} already exists"
+            exit 1
+          fi
+          test "$status" = "404"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: plugin-release
+          path: release-artifacts
+      - uses: >-
+          softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          name: Recalla ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: false
+          files: release-artifacts/*

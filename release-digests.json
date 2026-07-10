@@ -1,0 +1,10 @@
+{
+  "engineVersion": "0.5.0",
+  "assets": {
+    "recalla-macos-arm64": "",
+    "recalla-macos-x64": "",
+    "recalla-linux-arm64": "",
+    "recalla-linux-x64": "",
+    "recalla-windows-x64.exe": ""
+  }
+}

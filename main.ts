@@ -1,22 +1,34 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf, requestUrl } from "obsidian";
-import { spawn, ChildProcess } from "child_process";
-import * as path from "path";
 import {
-	AskOutcome,
+	FileSystemAdapter,
+	Notice,
+	Plugin,
+	TFile,
+	type WorkspaceLeaf,
+	requestUrl,
+} from "obsidian";
+import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import {
+	type AskOutcome,
 	DEFAULT_SETTINGS,
-	RecallaSettings,
-	ServerState,
+	type RecallaSettings,
+	type ServerState,
 	toMessage,
 } from "./src/types";
 import { BinaryManager } from "./src/binary-manager";
+import { MANAGED_ENGINE_VERSION } from "./src/binary-release";
 import { parseAskOutput, classifyAskError } from "./src/ask";
 import { RECALLA_CHAT_VIEW, RecallaChatView } from "./src/chat-view";
 import { RecallaSearchModal } from "./src/search-modal";
 import { RecallaSettingTab } from "./src/settings-tab";
+import { isSuccessfulExit, isValidPort } from "./src/runtime";
 
 const REINDEX_DEBOUNCE_MS = 3000;
 const SERVER_READY_TIMEOUT_MS = 20000;
 const SERVER_POLL_INTERVAL_MS = 400;
+const SERVER_STOP_TIMEOUT_MS = 5000;
+const HEALTH_PROBE_TIMEOUT_MS = 3000;
 
 export default class RecallaPlugin extends Plugin {
 	settings: RecallaSettings = DEFAULT_SETTINGS;
@@ -25,6 +37,8 @@ export default class RecallaPlugin extends Plugin {
 	indexing = false;
 	private statusBarEl: HTMLElement | null = null;
 	private reindexTimer: ReturnType<typeof setTimeout> | null = null;
+	private serverStopTimer: ReturnType<typeof setTimeout> | null = null;
+	private warnedCorruptEngine = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -32,7 +46,7 @@ export default class RecallaPlugin extends Plugin {
 
 		this.registerView(
 			RECALLA_CHAT_VIEW,
-			(leaf: WorkspaceLeaf) => new RecallaChatView(leaf, this)
+			(leaf: WorkspaceLeaf) => new RecallaChatView(leaf, this),
 		);
 		this.addRibbonIcon("messages-square", "Recalla chat", () => {
 			void this.activateChatView();
@@ -43,7 +57,7 @@ export default class RecallaPlugin extends Plugin {
 		this.updateStatusBar();
 
 		this.addCommand({
-			id: "recalla-open-chat",
+			id: "open-chat",
 			name: "Recalla: Open chat",
 			callback: () => {
 				void this.activateChatView();
@@ -51,7 +65,7 @@ export default class RecallaPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "recalla-download-engine",
+			id: "download-engine",
 			name: "Recalla: Download or update the engine",
 			callback: () => {
 				void this.downloadEngine();
@@ -59,7 +73,7 @@ export default class RecallaPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "recalla-make-agent-readable",
+			id: "make-agent-readable",
 			name: "Recalla: Make my vault agent-readable",
 			callback: () => {
 				void this.makeAgentReadable();
@@ -67,7 +81,7 @@ export default class RecallaPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "recalla-index",
+			id: "index",
 			name: "Recalla: Reindex vault",
 			callback: () => {
 				void this.indexVault();
@@ -75,19 +89,19 @@ export default class RecallaPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "recalla-serve-start",
+			id: "serve-start",
 			name: "Recalla: Start local server",
 			callback: () => this.startServer(),
 		});
 
 		this.addCommand({
-			id: "recalla-serve-stop",
+			id: "serve-stop",
 			name: "Recalla: Stop local server",
 			callback: () => this.stopServer(),
 		});
 
 		this.addCommand({
-			id: "recalla-search",
+			id: "search",
 			name: "Recalla: Search vault (agent index)",
 			callback: async () => {
 				const ready = await this.ensureServerReady();
@@ -98,7 +112,7 @@ export default class RecallaPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "recalla-copy-mcp",
+			id: "copy-mcp",
 			name: "Recalla: Copy MCP config to clipboard",
 			callback: () => {
 				void this.copyMcpConfig();
@@ -106,7 +120,7 @@ export default class RecallaPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "recalla-agents",
+			id: "agents",
 			name: "Recalla: Generate AGENTS.md and llms.txt",
 			callback: () => this.runAgents(),
 		});
@@ -119,7 +133,7 @@ export default class RecallaPlugin extends Plugin {
 
 		if (this.settings.autoReindexOnSave) {
 			this.registerEvent(
-				this.app.vault.on("modify", () => this.scheduleReindex())
+				this.app.vault.on("modify", () => this.scheduleReindex()),
 			);
 		}
 	}
@@ -136,8 +150,12 @@ export default class RecallaPlugin extends Plugin {
 		this.settings = Object.assign(
 			{},
 			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<RecallaSettings>
+			(await this.loadData()) as Partial<RecallaSettings>,
 		);
+		// Legacy saved data can carry an out-of-range port straight into spawn().
+		if (!isValidPort(this.settings.port)) {
+			this.settings.port = DEFAULT_SETTINGS.port;
+		}
 	}
 
 	async saveSettings(): Promise<void> {
@@ -145,10 +163,11 @@ export default class RecallaPlugin extends Plugin {
 	}
 
 	getVaultPath(): string {
-		const adapter = this.app.vault.adapter as unknown as {
-			basePath: string;
-		};
-		return adapter.basePath;
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) {
+			throw new Error("Recalla requires a desktop filesystem vault.");
+		}
+		return adapter.getBasePath();
 	}
 
 	/** Absolute path to this plugin's own folder inside the vault. */
@@ -168,7 +187,20 @@ export default class RecallaPlugin extends Plugin {
 		if (this.binary.isDownloaded()) {
 			return this.binary.binaryPath();
 		}
+		if (!this.warnedCorruptEngine && this.binary.hasCorruptManagedBinary()) {
+			this.warnedCorruptEngine = true;
+			new Notice(
+				"Recalla: the downloaded engine failed integrity verification and was ignored. Re-run the download command.",
+			);
+		}
 		return "recalla";
+	}
+
+	/** True when commands will run the plugin-managed, digest-verified binary. */
+	private usingManagedEngine(): boolean {
+		return (
+			this.settings.recallaPath.trim().length === 0 && this.binary.isDownloaded()
+		);
 	}
 
 	/** Human-readable engine state for the settings tab. */
@@ -234,7 +266,7 @@ export default class RecallaPlugin extends Plugin {
 	async downloadEngine(): Promise<void> {
 		if (!this.binary.isPlatformSupported()) {
 			new Notice(
-				"Recalla: no engine build for this platform. Set a custom engine path in settings."
+				"Recalla: no engine build for this platform. Set a custom engine path in settings.",
 			);
 			return;
 		}
@@ -259,7 +291,7 @@ export default class RecallaPlugin extends Plugin {
 		}
 		if (!this.binary.isPlatformSupported()) {
 			new Notice(
-				"Recalla: no engine build for this platform. Set a custom engine path in settings."
+				"Recalla: no engine build for this platform. Set a custom engine path in settings.",
 			);
 			return false;
 		}
@@ -323,8 +355,7 @@ export default class RecallaPlugin extends Plugin {
 				stderr += data.toString();
 			});
 			child.on("error", (err: NodeJS.ErrnoException) => {
-				const kind =
-					err.code === "ENOENT" ? "engine-missing" : "unknown";
+				const kind = err.code === "ENOENT" ? "engine-missing" : "unknown";
 				finish({
 					answer: "",
 					sources: [],
@@ -332,7 +363,7 @@ export default class RecallaPlugin extends Plugin {
 				});
 			});
 			child.on("close", (code: number | null) => {
-				if (code === 0 || code === null) {
+				if (isSuccessfulExit(code)) {
 					const parsed = parseAskOutput(stdout);
 					finish({
 						answer: parsed.answer,
@@ -388,7 +419,7 @@ export default class RecallaPlugin extends Plugin {
 			child.on("close", (code: number | null) => {
 				this.indexing = false;
 				this.updateStatusBar();
-				if (code === 0 || code === null) {
+				if (isSuccessfulExit(code)) {
 					new Notice("Recalla: index complete.");
 					resolve(true);
 				} else {
@@ -399,54 +430,118 @@ export default class RecallaPlugin extends Plugin {
 		});
 	}
 
-	startServer(): void {
+	startServer(announce = true): void {
 		if (this.serverProcess !== null) {
 			new Notice("Recalla server is already running.");
 			return;
 		}
 		const vaultPath = this.getVaultPath();
-		const child = spawn(this.resolveBinaryPath(), [
-			"serve",
-			"--vault",
-			vaultPath,
-			"--port",
-			String(this.settings.port),
-		]);
+		const child = spawn(
+			this.resolveBinaryPath(),
+			["serve", "--vault", vaultPath, "--port", String(this.settings.port)],
+			{ stdio: "ignore" },
+		);
 
 		child.on("error", (err: Error) => {
-			this.serverProcess = null;
-			this.updateStatusBar();
+			if (this.serverProcess === child) {
+				this.clearTrackedServer(child);
+			}
 			new Notice(`Recalla server failed: ${err.message}`);
 		});
 
 		child.on("close", () => {
-			this.serverProcess = null;
-			this.updateStatusBar();
+			if (this.serverProcess === child) {
+				this.clearTrackedServer(child);
+			}
 		});
 
 		this.serverProcess = child;
 		this.updateStatusBar();
-		new Notice(`Recalla: server started on 127.0.0.1:${this.settings.port}`);
+		if (announce) {
+			void this.confirmServerStarted(child);
+		}
+	}
+
+	/**
+	 * Success is only announced after an identity-checked /health response; a
+	 * child that never becomes ready is terminated instead of lingering as a
+	 * tracked-but-dead server.
+	 */
+	private async confirmServerStarted(child: ChildProcess): Promise<void> {
+		const notice = new Notice("Recalla: starting local server...", 0);
+		const ok = await this.waitForServerReady();
+		notice.hide();
+		if (this.serverProcess !== child) {
+			return;
+		}
+		if (ok) {
+			new Notice(`Recalla: server ready on 127.0.0.1:${this.settings.port}`);
+			return;
+		}
+		child.kill();
+		this.clearTrackedServer(child);
+		new Notice(
+			"Recalla: the local server did not become ready. Check the engine path and port in settings.",
+		);
+	}
+
+	private clearTrackedServer(child: ChildProcess): void {
+		if (this.serverProcess !== child) return;
+		if (this.serverStopTimer !== null) {
+			clearTimeout(this.serverStopTimer);
+			this.serverStopTimer = null;
+		}
+		this.serverProcess = null;
+		this.updateStatusBar();
 	}
 
 	stopServer(): void {
-		if (this.serverProcess === null) {
-			return;
-		}
-		this.serverProcess.kill();
-		this.serverProcess = null;
-		this.updateStatusBar();
-		new Notice("Recalla: server stopped.");
+		const child = this.serverProcess;
+		if (child === null) return;
+		child.kill();
+		if (this.serverStopTimer !== null) clearTimeout(this.serverStopTimer);
+		this.serverStopTimer = setTimeout(() => {
+			if (this.serverProcess === child) {
+				child.kill("SIGKILL");
+				this.clearTrackedServer(child);
+			}
+		}, SERVER_STOP_TIMEOUT_MS);
+		new Notice("Recalla: stopping server...");
 	}
 
-	/** A single /health probe. True only on a 200 with the recalla engine. */
+	/**
+	 * A single bounded /health probe. Obsidian's requestUrl cannot be aborted,
+	 * so a hung localhost service is raced against a short timeout instead of
+	 * being allowed to stall the whole readiness deadline.
+	 */
 	async isServerHealthy(): Promise<boolean> {
 		try {
-			const res = await requestUrl({
-				url: `http://127.0.0.1:${this.settings.port}/health`,
-				throw: false,
-			});
-			return res.status === 200 && res.json?.ok === true;
+			const res = await Promise.race([
+				requestUrl({
+					url: `http://127.0.0.1:${this.settings.port}/health`,
+					throw: false,
+				}),
+				new Promise<never>((_, reject) => {
+					window.setTimeout(
+						() => reject(new Error("health probe timed out")),
+						HEALTH_PROBE_TIMEOUT_MS,
+					);
+				}),
+			]);
+			const expectedVault = fs.realpathSync(this.getVaultPath());
+			// Exact-version equality only applies to the plugin-managed binary. A
+			// custom-path or PATH engine (the documented route on unsupported
+			// platforms) must not be rejected for being newer than the pin.
+			const versionOk = this.usingManagedEngine()
+				? res.json?.version === MANAGED_ENGINE_VERSION
+				: typeof res.json?.version === "string" && res.json.version.length > 0;
+			return (
+				res.status === 200 &&
+				res.json?.ok === true &&
+				res.json?.engine === "recalla" &&
+				versionOk &&
+				res.json?.vault === expectedVault
+			);
 		} catch {
 			return false;
 		}
@@ -458,7 +553,7 @@ export default class RecallaPlugin extends Plugin {
 	 * to start, so callers must wait rather than assume the server is up.
 	 */
 	async waitForServerReady(
-		timeoutMs: number = SERVER_READY_TIMEOUT_MS
+		timeoutMs: number = SERVER_READY_TIMEOUT_MS,
 	): Promise<boolean> {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
@@ -484,14 +579,15 @@ export default class RecallaPlugin extends Plugin {
 			if (!ready) {
 				return false;
 			}
-			this.startServer();
+			// This path owns its own readiness notice below.
+			this.startServer(false);
 		}
 		const notice = new Notice("Recalla: starting local server...", 0);
 		const ok = await this.waitForServerReady();
 		notice.hide();
 		if (!ok) {
 			new Notice(
-				"Recalla: the local server did not come up in time. Check the engine path in settings."
+				"Recalla: the local server did not come up in time. Check the engine path in settings.",
 			);
 		}
 		return ok;
@@ -540,7 +636,7 @@ export default class RecallaPlugin extends Plugin {
 		});
 
 		child.on("close", (code: number | null) => {
-			if (code === 0 || code === null) {
+			if (isSuccessfulExit(code)) {
 				new Notice("Recalla: AGENTS.md and llms.txt generated.");
 			} else {
 				new Notice(`Recalla agents exited with code ${code}.`);

@@ -1,76 +1,93 @@
 # Obsidian community plugin submission
 
-Everything needed to list Recalla in the Obsidian community plugin directory.
-The two externally-visible steps (creating the GitHub release and opening the PR)
-are listed last and need explicit approval before running.
+release candidate checklist for listing Recalla in the Obsidian community plugin
+directory. public repository, release, and PR steps are external mutations and
+must not run without explicit maintainer approval.
 
-## Compliance checklist (done)
+current official references:
 
-- [x] Public repo: `Tensorboyalive/recalla-obsidian`.
-- [x] `manifest.json` at root: id `recalla` (no "obsidian", no "plugin"), name
-      `Recalla`, version, minAppVersion, description (concise, no "this plugin",
-      does not mention Obsidian), author, authorUrl, `isDesktopOnly: true`
-      (it spawns a child process and downloads a binary, so desktop only).
-- [x] `versions.json` maps the version to a minAppVersion.
-- [x] `LICENSE` present (Apache-2.0).
-- [x] `README.md` explains install, usage, and requirements.
-- [x] Build is clean: `npm run build` produces `main.js`, `tsc --noEmit` passes.
-- [x] No telemetry, no network calls except the pinned GitHub release download,
-      which is SHA256-verified before the binary is executed.
+- [submission requirements](https://docs.obsidian.md/Plugins/Releasing/Submission+requirements+for+plugins)
+- [release flow](https://docs.obsidian.md/Plugins/Releasing/Release+your+plugin+with+GitHub+Actions)
+- [community repository](https://github.com/obsidianmd/obsidian-releases)
 
-## Reviewer note (be ready for this)
+## local compliance checklist
 
-Recalla downloads a standalone engine binary from its own GitHub release and runs
-it. Obsidian reviewers scrutinize code that fetches and executes binaries. Our
-mitigations, call them out in the PR:
+- [x] `manifest.json` is at the root. its id is `recalla`, its description is
+  concise and ends in a period, and `isDesktopOnly` is true because the plugin
+  uses Node process, filesystem, HTTPS, and crypto APIs.
+- [x] `versions.json` maps `0.1.1` to the minimum Obsidian app version.
+- [x] `LICENSE` is Apache-2.0.
+- [x] `README.md` explains install, operation, supported architectures, privacy,
+  and the managed-engine download.
+- [x] `npm test` and `npm run build` verify runtime guards and produce `main.js`.
+- [x] `.github/workflows/release.yml` rejects a mismatched tag, reruns tests and
+  build, verifies the pinned engine artifacts, and creates an immutable release.
+- [x] managed binaries are selected by OS and CPU architecture and cached under
+  release-and-asset-specific paths.
+- [ ] after engine release, populate all five trusted hashes in
+  `release-digests.json`; the plugin and release workflow fail closed until then.
 
-- The download URL is pinned to the official repo
-  (`github.com/Tensorboyalive/recalla/releases/latest/download/...`).
-- The download is verified against a published per-binary `.sha256` and rejected
-  on mismatch (see `src/binary-manager.ts`).
-- The user must opt in (a command or the one-click setup) before anything is
-  downloaded; nothing happens silently on load.
-- `isDesktopOnly` is true; the plugin uses Node `child_process`/`https`/`crypto`.
-- Users can instead point at a `recalla` they installed themselves (settings).
+## launch gates
 
-## community-plugins.json entry (paste this)
+- [ ] make `Tensorboyalive/recalla` public and publish engine `0.5.0` with all
+  five architecture-specific binaries and checksums.
+- [ ] run `node scripts/verify-engine-assets.mjs` against the populated digest
+  map; it downloads and hashes every pinned engine asset.
+- [ ] make `Tensorboyalive/recalla-obsidian` public.
+- [ ] publish plugin release `0.1.1` with `main.js`, `manifest.json`, and
+  `styles.css` attached at the release root.
+- [ ] verify a clean manual install and one-click engine setup in Obsidian.
+- [ ] open and land the community-directory PR.
 
-Append to the array in `obsidianmd/obsidian-releases/community-plugins.json`:
+## reviewer disclosure
+
+Recalla downloads a standalone engine from its official GitHub release and runs
+it. call this out directly in the submission:
+
+- nothing downloads on plugin load. the user must run the setup command.
+- the URL is pinned to the official engine `v0.5.0` release, not a mutable
+  `latest` redirect.
+- the selected asset must match the current OS and CPU architecture.
+- the plugin downloads that asset's `.sha256`, requires it to name the exact
+  binary, hashes the bytes, and rejects the download on any mismatch.
+- installation uses a temporary file and restores the previous verified binary
+  if replacement fails.
+- users can bypass managed downloads and point to a self-installed executable.
+- the plugin is desktop-only and has no telemetry.
+
+reviewers may still reject an executable-downloading plugin. that is an external
+policy decision, not a locally closable engineering task.
+
+## community-plugins.json entry
 
 ```json
 {
-	"id": "recalla",
-	"name": "Recalla",
-	"author": "Tensorboyalive",
-	"description": "Make your vault a fast, private, agent-readable brain. Index, search, and chat with your notes, all on your machine.",
-	"repo": "Tensorboyalive/recalla-obsidian"
+  "id": "recalla",
+  "name": "Recalla",
+  "author": "Tensorboyalive",
+  "description": "Make your vault a fast, private, agent-readable brain. Index, search, and chat with your notes, all on your machine.",
+  "repo": "Tensorboyalive/recalla-obsidian"
 }
 ```
 
-## Steps that need approval (do not run without an explicit go)
+## approval-only release and submission
 
-1. Create the plugin GitHub release (tag must equal the manifest version, assets
-   at the release root):
-
-   ```bash
-   cd ~/projects/recalla-obsidian
-   npm run build   # ensure main.js is current
-   gh release create 0.1.0 --repo Tensorboyalive/recalla-obsidian \
-     --title "Recalla 0.1.0" \
-     --notes "First release: index, search, chat panel, MCP config, and a self-managed engine binary (SHA256-verified)." \
-     main.js manifest.json styles.css
-   ```
-
-2. Open the directory PR:
+1. after the engine release is publicly verified, create the plugin tag:
 
    ```bash
-   gh repo fork obsidianmd/obsidian-releases --clone --remote
-   # edit community-plugins.json: append the entry above
-   # commit on a branch, push to your fork, then:
-   gh pr create --repo obsidianmd/obsidian-releases \
-     --title "Add plugin: Recalla" \
-     --body "Recalla makes a vault agent-readable: local index, search, and chat. Desktop-only. Engine binary is downloaded from our pinned GitHub release and SHA256-verified before execution. Repo: https://github.com/Tensorboyalive/recalla-obsidian"
+   cd /Users/lucifer/Documents/Lucifer/projects/recalla-ecosystem/recalla-obsidian
+   npm ci
+   npm test
+   npm run build
+   git tag -a 0.1.1 -m "recalla obsidian 0.1.1"
+   git push origin 0.1.1
    ```
 
-3. Respond to the automated bot checks and a human reviewer. Iterate until merged.
-   Once merged, Recalla appears in Settings -> Community plugins for everyone.
+   the release workflow checks the version triplet and publishes the required
+   assets. verify the release is public before continuing.
+
+2. fork `obsidianmd/obsidian-releases`, append the entry above to
+   `community-plugins.json`, and open a PR titled `Add plugin: Recalla`.
+
+3. in the PR, disclose the downloaded engine and checksum/rollback controls.
+respond to automated checks and the human reviewer until merged.

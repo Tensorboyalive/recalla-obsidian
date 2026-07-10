@@ -1,5 +1,6 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { type App, PluginSettingTab, Setting } from "obsidian";
 import { DEFAULT_SETTINGS } from "./types";
+import { isValidPort } from "./runtime";
 import type RecallaPlugin from "../main";
 
 export class RecallaSettingTab extends PluginSettingTab {
@@ -14,15 +15,13 @@ export class RecallaSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		new Setting(containerEl)
-			.setName("Engine")
-			.setHeading();
+		new Setting(containerEl).setName("Engine").setHeading();
 
 		const status = this.plugin.engineStatusLabel();
 		new Setting(containerEl)
 			.setName("Recalla engine")
 			.setDesc(
-				`Status: ${status}. The engine is a small standalone program. Download it once and the plugin manages it for you.`
+				`Status: ${status}. The engine is a small standalone program. Download it once and the plugin manages it for you.`,
 			)
 			.addButton((button) =>
 				button
@@ -33,13 +32,13 @@ export class RecallaSettingTab extends PluginSettingTab {
 						await this.plugin.downloadEngine();
 						button.setDisabled(false);
 						this.display();
-					})
+					}),
 			);
 
 		new Setting(containerEl)
 			.setName("Custom engine path")
 			.setDesc(
-				"Optional. Absolute path or command for the recalla engine. Leave empty to use the downloaded engine, or `recalla` on your PATH."
+				"Optional. Absolute path or command for the recalla engine. Leave empty to use the downloaded engine, or `recalla` on your PATH.",
 			)
 			.addText((text) =>
 				text
@@ -48,7 +47,7 @@ export class RecallaSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.recallaPath = value.trim();
 						await this.plugin.saveSettings();
-					})
+					}),
 			);
 
 		new Setting(containerEl).setName("Server").setHeading();
@@ -62,11 +61,11 @@ export class RecallaSettingTab extends PluginSettingTab {
 					.setValue(String(this.plugin.settings.port))
 					.onChange(async (value) => {
 						const parsed = Number.parseInt(value, 10);
-						if (!Number.isNaN(parsed) && parsed > 0) {
+						if (isValidPort(parsed)) {
 							this.plugin.settings.port = parsed;
 							await this.plugin.saveSettings();
 						}
-					})
+					}),
 			);
 
 		new Setting(containerEl)
@@ -78,13 +77,13 @@ export class RecallaSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.autoStartServer = value;
 						await this.plugin.saveSettings();
-					})
+					}),
 			);
 
 		new Setting(containerEl)
 			.setName("Auto-reindex on save")
 			.setDesc(
-				"Reindex the vault automatically after notes change (debounced)."
+				"Reindex the vault automatically after notes change (debounced).",
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -92,7 +91,7 @@ export class RecallaSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.autoReindexOnSave = value;
 						await this.plugin.saveSettings();
-					})
+					}),
 			);
 	}
 }

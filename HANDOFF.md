@@ -1,83 +1,46 @@
-# Handoff: zero-install engine management + chat panel
+# Handoff: recalla-obsidian 0.1.1 release candidate
 
-Goal: make the Recalla plugin work for a non-technical user who has nothing
-installed but Obsidian. No Python, no terminal, no manual binary setup.
+Current state of the plugin as prepared for the 0.5.0 open-core release. For
+submission steps and reviewer disclosure see `SUBMISSION.md`; for the release
+order see the engine repo's `PUBLISHING.md`.
 
-## What changed
+## What this plugin is
 
-The plugin was a single `main.ts` that shelled out to a `recalla` CLI assumed to
-be on PATH. It now auto-manages a standalone engine binary, adds a chat panel, and
-ships a one-click onboarding command. Source was split into small, cohesive
-modules under `src/`.
+Desktop-only Obsidian plugin that makes a vault agent-readable by managing the
+standalone `recalla` engine: one-click download, index, local API server, search
+modal, and a chat panel. Source is split into small modules under `src/` with
+`main.ts` as orchestration.
 
-### New files
+## Security and release posture (0.1.1)
 
-- `src/types.ts` — shared types: `RecallaSettings` (with `recallaPath` now
-  defaulting to empty, meaning "let the plugin decide"), `AskOutcome`/`AskError`,
-  `ServerState`, and a `toMessage(unknown)` helper.
-- `src/binary-manager.ts` — `BinaryManager`. Detects OS via `process.platform`
-  (darwin -> `recalla-macos`, linux -> `recalla-linux`, win32 ->
-  `recalla-windows.exe`), downloads the asset from
-  `https://github.com/Tensorboyalive/recalla/releases/latest/download/<asset>`
-  using Node `https` with manual 302 redirect following, streams to a `.download`
-  temp file, atomically renames into place, `chmod +x` on non-Windows, and caches
-  under `<plugin-dir>/bin/recalla-engine`. Progress is reported through a single
-  reused `Notice` (percent when content-length is known, MB otherwise).
-- `src/ask.ts` — pure helpers: `parseAskOutput` (splits answer from a `sources:`
-  line, handling inline comma lists and bulleted lists) and `classifyAskError`
-  (maps stderr to `server-down` / `no-api-key` / `unknown`).
-- `src/chat-view.ts` — `RecallaChatView`, a right-sidebar `ItemView` with a
-  scrollable message list and a textarea input (Enter sends, Shift+Enter newline).
-  Renders the answer plus clickable source links. Shows targeted inline help for
-  engine-missing (with a Download button), server-down (with a Start server
-  button), and no-api-key (OPENAI_API_KEY / ANTHROPIC_API_KEY / Ollama guidance).
-- `src/search-modal.ts` — the existing `RecallaSearchModal`, extracted unchanged.
-- `src/settings-tab.ts` — `RecallaSettingTab`. New engine status line + download
-  button, and the path field is now an optional "Custom engine path" override.
-
-### Modified files
-
-- `main.ts` — now orchestration only. Wires up `BinaryManager`, registers the
-  chat view + ribbon icon, and adds commands:
-  - `Recalla: Open chat`
-  - `Recalla: Download or update the engine`
-  - `Recalla: Make my vault agent-readable` (download if needed -> index -> serve)
-  Key methods: `resolveBinaryPath()` enforces the resolution order
-  **user-set path > downloaded binary > `recalla` on PATH**; `runAsk()` spawns
-  `<binary> ask "<q>" --vault <vaultPath>` and returns a structured `AskOutcome`;
-  `openSource()` opens cited notes; `indexVault()` now returns a Promise so the
-  one-click flow can chain index -> serve. All CLI calls go through
-  `resolveBinaryPath()`.
-- `styles.css` — added chat panel styles (message bubbles, source links, input
-  row, inline help) using Obsidian CSS variables. Motion/layout untouched.
-- `README.md` — rewritten to describe the zero-install flow, the chat panel, the
-  new commands/settings, and how to configure an LLM key (or Ollama).
-
-## Design notes
-
-- Desktop-only plugin, so Node built-ins (`child_process`, `https`, `fs`, `path`)
-  are imported directly; esbuild marks them external.
-- Submodules import the plugin class with `import type`, which is erased at
-  compile time, so there is no runtime circular dependency.
-- Strictly typed throughout: no `any`. Buffers, `NodeJS.ErrnoException`, and
-  `IncomingMessage` are typed explicitly.
+- Engine downloads are pinned to the `v0.5.0` release tag, never `latest`.
+- The asset is selected by OS and CPU (`src/binary-release.ts`); unsupported
+  pairs fail closed with guidance to set a custom path.
+- A download is executed only if its SHA-256 matches BOTH the committed digest
+  in `release-digests.json` and the published `.sha256` sidecar naming that
+  exact asset. The digest map ships empty until the engine release exists, so
+  the plugin and the release workflow fail closed by design.
+- Downloads are bounded (250 MB binary, 16 KB checksum), timeout-bounded
+  including connection setup, single-flight, and stream to a temp file.
+- Replacement keeps a `.previous` backup, smoke-runs `--version`, and rolls
+  back on failure. The cache path is release- and asset-specific.
+- `/health` acceptance requires engine name, exact version, and canonical vault
+  path; probes are raced against a 3 s timeout. Server start is announced only
+  after readiness; a child that never becomes ready is terminated.
+- Command IDs are unprefixed per Obsidian submission requirements. Vault path
+  access uses the public `FileSystemAdapter` API.
 
 ## Verification
 
-Run from `~/projects/recalla-obsidian`:
+- `npm test` — 11 unit tests (asset mapping, digests, checksums, exit/port
+  guards, ask parsing).
+- `npm run build` — `tsc -noEmit -skipLibCheck` + esbuild produce `main.js`.
+- `npm audit --audit-level=high` — clean.
+- `node scripts/verify-engine-assets.mjs` — downloads and hashes all five
+  pinned engine assets against the committed digests (fails until published).
 
-- `npm install` — completes.
-- `npm run build` — exit 0. Runs `tsc -noEmit -skipLibCheck` then esbuild;
-  produces `main.js` (31 KB) with no errors. Confirmed the bundle contains the
-  `recalla-chat-view` registration.
-- `npx tsc --noEmit --skipLibCheck` — exit 0, no type errors.
+## Human-gated (not done here)
 
-`main.js` is gitignored (build artifact); source modules are committed.
-
-## Not done (out of scope / needs human)
-
-- No live end-to-end run against a real engine binary or a real LLM key (the
-  release assets and keys are not available in this environment). Logic for
-  download, ask parsing, and error classification is unit-friendly via `src/ask.ts`
-  and was exercised through the type checker and build only.
-- No release published, nothing pushed. Human approves releases.
+- Populate `release-digests.json` after the engine `v0.5.0` release is public.
+- Tag `0.1.1`, publish the GitHub release, manual Obsidian UI smoke, and the
+  community-directory PR (see `SUBMISSION.md`).
