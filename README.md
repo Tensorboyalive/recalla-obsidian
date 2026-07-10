@@ -22,9 +22,15 @@ chat over your notes, all on your machine.
 
 ## install
 
-the community directory listing is pending, so install the three files from the
-[latest release](https://github.com/Tensorboyalive/recalla-obsidian/releases/latest)
-into `.obsidian/plugins/recalla/`, then enable **recalla** in community plugins.
+desktop only (the plugin manages a local engine process). the community
+directory listing is pending, so install manually from the
+[latest release](https://github.com/Tensorboyalive/recalla-obsidian/releases/latest):
+
+1. download `main.js`, `manifest.json`, and `styles.css` from the release.
+2. create the folder `<your vault>/.obsidian/plugins/recalla/` and put the
+   three files inside it, keeping the filenames.
+3. in Obsidian: Settings → Community plugins → turn off Restricted Mode.
+4. reload Obsidian, then enable **Recalla** in the plugin list.
 
 run **recalla: make my vault agent-readable** from the command palette. the
 plugin downloads the matching OS and CPU build from the pinned engine `v0.5.0`
